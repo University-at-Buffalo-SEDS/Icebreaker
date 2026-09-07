@@ -32,128 +32,138 @@ Alternatively, use the build and flash helper:
 The helper writes ELF and BIN files to `build/Debug_Script` or
 `build/Release_Script` and flashes at `0x08000000` by default.
 
-## Learning exercise: build a servo driver
+## Learning exercise: control a servo from main
 
-Write a driver that controls a servo's position with hardware PWM. The data below
-comes from the removed valve-board driver and the existing CubeMX configuration;
-it describes the previous firmware settings, not a manufacturer datasheet.
-No driver implementation is provided here.
+Make a servo hold a position by turning a GPIO pin HIGH and LOW in a repeating
+loop in `Core/Src/main.c`. Use software delays to time the pulses. You do not need
+timer PWM, interrupts, a separate driver file, or another peripheral beyond GPIO.
+The implementation is left for you to write.
 
-### Signal and timer settings
+### What signal does the servo need?
 
-The position is set by the duration of the HIGH pulse in each repeating frame.
-Keep the frame period fixed while changing the pulse width.
+Repeat one pulse every **20 milliseconds** (50 pulses per second). The amount of
+time the signal stays HIGH tells the servo which position to hold. Keep sending
+pulses for as long as you want to command that position.
 
-| Parameter | Value |
+| Position | Time HIGH | Time LOW | Total period | Duty cycle |
+| --- | --- | --- | --- | --- |
+| 0° | 500 µs | 19,500 µs | 20,000 µs | 2.5% |
+| 135° (midpoint) | 1,500 µs | 18,500 µs | 20,000 µs | 7.5% |
+| 270° | 2,500 µs | 17,500 µs | 20,000 µs | 12.5% |
+
+These are the settings used by the previous firmware, not independently verified
+manufacturer specifications. Its angle range was 0–270° with a linear mapping
+between 500 and 2,500 µs.
+
+- 1 millisecond (ms) = 1,000 microseconds (µs).
+- Time LOW = 20,000 µs − time HIGH.
+- Duty cycle is the percentage of each period spent HIGH.
+- A 20 ms LOW delay after the HIGH pulse would make the period too long: subtract
+  the HIGH time from the period first.
+
+### Choose and configure a pin
+
+| Previous servo connection | MCU pin |
 | --- | --- |
-| PWM period | 20,000 µs (20 ms) |
-| PWM frequency | 50 Hz |
-| Minimum HIGH pulse | 500 µs |
-| Midpoint HIGH pulse | 1,500 µs |
-| Maximum HIGH pulse | 2,500 µs |
-| Duty-cycle range | 2.5–12.5% (midpoint: 7.5%) |
-| Previous angle mapping | 0–270°, linear across 500–2,500 µs |
-| Timer | TIM2, handle `htim2` |
-| Timer input clock | 170 MHz with the existing clock configuration |
-| Prescaler register (PSC) | 169 |
-| Counter tick | 1 µs (1 MHz counter clock) |
-| Auto-reload register (ARR) | 19,999 (20,000 ticks per frame) |
-| PWM mode / polarity | PWM mode 1 / active HIGH |
+| Dump servo signal | PA0 |
+| Normally-open (NO) servo signal | PA1 |
 
-| Output | Timer channel constant | MCU pin | GPIO alternate function |
-| --- | --- | --- | --- |
-| Dump servo | `TIM_CHANNEL_1` | PA0 | AF1 TIM2 |
-| Normally-open (NO) servo | `TIM_CHANNEL_2` | PA1 | AF1 TIM2 |
+Choose one servo for the exercise. The existing project configures PA0 and PA1
+as timer alternate-function pins. **Change your chosen pin to a normal push-pull
+GPIO output, initially LOW**, before trying to toggle it. You can change this in
+CubeMX or configure the GPIO in a user section of `main` after all generated
+initialization calls. If configuring it in `main`, do so after `MX_TIM2_Init()`,
+which otherwise restores the timer pin configuration. Do not start timer PWM.
 
-CubeMX already configures these channels, but the starter application does not
-start PWM. Both channels initially have a compare value of zero.
+Use `HAL_GPIO_WritePin` to set the output HIGH or LOW. The servo signal and board
+need a shared ground; the GPIO is the control signal, not the servo's power supply.
 
-### Suggested function interface
+### Suggested function
 
-Put declarations in `Drivers/Servo/servo_driver.h` and implement them in
-`Drivers/Servo/servo_driver.c`. Include `main.h` for the STM32 HAL types and
-`stdint.h` for the fixed-width integer types. These are declarations only:
+Keep the declaration and your implementation in user sections of
+`Core/Src/main.c`. No extra source files or CMake changes are needed.
+This is a prototype only:
 
 ```c
-HAL_StatusTypeDef servo_start(TIM_HandleTypeDef *htim,
-                             uint32_t channel,
-                             uint16_t initial_pulse_us);
-
-HAL_StatusTypeDef servo_set_pulse_us(TIM_HandleTypeDef *htim,
-                                    uint32_t channel,
-                                    uint16_t pulse_width_us);
-
-uint16_t servo_degrees_to_us(uint16_t degrees);
+void servo_pulse(GPIO_TypeDef *port, uint16_t pin, uint16_t pulse_width_us);
 ```
 
-| Parameter | Meaning / accepted values |
-| --- | --- |
-| `htim` | Pointer to the initialized PWM timer; use `&htim2` on this board. |
-| `channel` | HAL channel constant: `TIM_CHANNEL_1` or `TIM_CHANNEL_2`, not a plain channel number. |
-| `initial_pulse_us` | First HIGH pulse width, in microseconds; 500–2,500 inclusive. |
-| `pulse_width_us` | Requested HIGH pulse width, in microseconds; 500–2,500 inclusive. |
-| `degrees` | Absolute angle from 0 to 270; clamp larger values to 270. |
+| Parameter | Meaning | Example |
+| --- | --- | --- |
+| `port` | GPIO port containing the signal pin | `GPIOA` |
+| `pin` | HAL pin mask, not a plain pin number | `GPIO_PIN_0` or `GPIO_PIN_1` |
+| `pulse_width_us` | Requested HIGH time, 500–2,500 µs inclusive | `1500` for midpoint |
 
-Suggested behavior:
+Have the function produce **one complete 20 ms frame** and then return. Clamp
+pulse widths below 500 µs to 500 µs and above 2,500 µs to 2,500 µs. Assume the port
+and pin are valid and already configured. The function blocks while generating
+its frame and does not report whether the servo has physically reached a position.
 
-- `servo_start`: validate the arguments, set the initial compare value, then start
-  that PWM channel. Return the HAL start status, or `HAL_ERROR` for invalid inputs.
-- `servo_set_pulse_us`: update the compare value of an already started channel.
-  Return `HAL_OK` on success. Reject a null timer, an unsupported channel, or an
-  out-of-range pulse with `HAL_ERROR`, leaving the output unchanged.
-- `servo_degrees_to_us`: return the pulse width for the clamped absolute angle.
-  Use integer arithmetic with a wide enough intermediate value and truncate the
-  fractional microseconds to match the previous driver.
+Call it repeatedly from the existing infinite loop in `main` to hold a position.
+Alternatively, put the same sequence directly in that loop without a helper
+function. A single call sends only one pulse; it does not maintain the signal.
 
-Starting PWM is a separate operation from changing position. Hardware keeps
-producing pulses after a position update; the setter should not wait for the
-servo to finish moving. These interfaces assume the fixed 20 ms timer setup above.
+### Work out the loop
 
-### Work out the conversion
+For each frame:
 
-Use these relationships to derive your implementation:
+1. Choose a HIGH time within the allowed range.
+2. Set the signal pin HIGH.
+3. Wait for the chosen number of microseconds.
+4. Set the signal pin LOW.
+5. Wait for the remainder of the 20,000 µs period.
+6. Repeat.
 
-- Counter frequency = timer input clock ÷ (PSC + 1).
-- Frame period = (ARR + 1) ÷ counter frequency.
-- Duty cycle (%) = pulse width ÷ frame period × 100, using matching units.
-- Compare value = pulse width in microseconds × (ARR + 1) ÷ 20,000.
-- Pulse width in microseconds = 500 + absolute angle × (2,500 − 500) ÷ 270.
+For this exercise, write a software busy-wait delay using a loop. You can give it
+this interface, also in `main.c`:
 
-With this timer configuration, the compare value numerically equals the pulse
-width in microseconds. Keep the angle calculation in at least 32-bit arithmetic
-before converting the result to `uint16_t`.
+```c
+void delay_us(uint32_t microseconds);
+```
 
-### Previous valve calibration
+A loop iteration is **not automatically one microsecond**. Its timing depends on
+the CPU clock, compiler optimization, and instructions inside the loop. An empty
+loop may be optimized away entirely. Work out how to keep the delay loop present
+and calibrate it using an oscilloscope or logic analyzer. Recheck it after changing
+build settings. The current project runs the CPU at 170 MHz, but that does not
+mean a C loop takes exactly one clock cycle per iteration.
 
-The old driver added a per-servo zero offset to the requested relative angle,
-clamped the result to 0–270°, then converted it to a pulse width. Its convention
-was positive relative angles clockwise and negative angles counterclockwise.
-These positions describe the old valve linkage; they are not generic endpoints
-for every servo installation.
+Do not use `HAL_Delay` for this exercise: it depends on a timer-backed HAL tick
+and accepts milliseconds, which is too coarse for these pulse widths. Software
+loop timing is approximate; GPIO calls, loop overhead, and interrupts can extend
+the measured pulse or period. Use the measured waveform to adjust your delay.
+This approach is a learning exercise and occupies the CPU while controlling the
+servo. Precise timing and doing other work at the same time are later topics.
 
-| Servo / state | Zero offset | Relative angle | Absolute angle | HIGH pulse | Duty cycle |
-| --- | --- | --- | --- | --- | --- |
-| NO open | 4° | 0° | 4° | 529 µs | 2.645% |
-| NO closed | 4° | 90° | 94° | 1,196 µs | 5.980% |
-| Dump open | 2° | 3° | 5° | 537 µs | 2.685% |
-| Dump closed | 2° | 90° | 92° | 1,181 µs | 5.905% |
+### Optional: choose a position in degrees
 
-The old driver's comment mentioned 1,000 µs for open and 2,000 µs for closed;
-its actual calibrated functions used the values in this table.
+Once a fixed pulse works, convert an absolute angle to a pulse width:
 
-### Build and check your driver
+**Pulse width (µs) = 500 + angle × 2,000 ÷ 270**
 
-1. Create the header and source files above. Look up the local HAL declarations
-   for `HAL_TIM_PWM_Start` and `__HAL_TIM_SET_COMPARE` to work out how to start a
-   channel and update its pulse width.
-2. Add the source file to the executable with `target_sources` in the root
-   `CMakeLists.txt`, and add `Drivers/Servo` with `target_include_directories`.
-3. Include your header in a user section of `Core/Src/main.c`. Initialize your
-   chosen servo channel after CubeMX's timer initialization, then request positions
-   from the application. Choose the initial pulse explicitly.
-4. Build using `./build.py build --debug`.
-5. Check the PWM pin with an oscilloscope or logic analyzer. Confirm a 20 ms period
-   and HIGH pulses of 500, 1,500, and 2,500 µs for absolute angles of 0°, 135°, and
-   270°. Check the calibrated positions against the table as well.
-6. Check that invalid pulse widths do not change the output, and that updating one
-   channel leaves the other channel's compare value unchanged.
+Clamp the angle to 0–270° first. Use at least 32-bit arithmetic for the
+multiplication and truncate fractional microseconds to match the previous driver.
+You can do this calculation directly in `main`.
+
+### Previous valve positions (optional reference)
+
+You do not need these to complete the exercise. They were calibrated for the old
+valve linkage and are not generic open/closed positions for every installation.
+
+| Servo / state | Absolute angle | HIGH time | LOW time | Duty cycle |
+| --- | --- | --- | --- | --- |
+| NO open | 4° | 529 µs | 19,471 µs | 2.645% |
+| NO closed | 94° | 1,196 µs | 18,804 µs | 5.980% |
+| Dump open | 5° | 537 µs | 19,463 µs | 2.685% |
+| Dump closed | 92° | 1,181 µs | 18,819 µs | 5.905% |
+
+### Build and check
+
+1. Write your loop or functions in the user sections of `Core/Src/main.c`.
+2. Build with `./build.py build --debug` and flash using your board's programmer.
+3. Measure your selected pin. Start with a 1,500 µs HIGH pulse and a total period
+   of approximately 20 ms, repeated continuously.
+4. Change the requested pulse width and check that the HIGH time changes while
+   the total period remains approximately 20 ms.
+5. Try an out-of-range request and confirm that your clamping keeps the HIGH time
+   within 500–2,500 µs.
