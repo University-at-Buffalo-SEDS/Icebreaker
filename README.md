@@ -35,8 +35,9 @@ The helper writes ELF and BIN files to `build/Debug_Script` or
 ## Learning exercise: control a servo from main
 
 Make a servo hold a position by turning a GPIO pin HIGH and LOW in a repeating
-loop in `Core/Src/main.c`. Use software delays to time the pulses. You do not need
-timer PWM, interrupts, a separate driver file, or another peripheral beyond GPIO.
+loop in `Core/Src/main.c`. Use `HAL_Delay` to time the HIGH and LOW parts. You do
+not need to implement timer PWM, interrupt handlers, or a separate driver file.
+Keep the existing HAL initialization and tick running so `HAL_Delay` works.
 The implementation is left for you to write.
 
 ### What signal does the servo need?
@@ -85,69 +86,88 @@ Keep the declaration and your implementation in user sections of
 This is a prototype only:
 
 ```c
-void servo_pulse(GPIO_TypeDef *port, uint16_t pin, uint16_t pulse_width_us);
+void servo_pulse(GPIO_TypeDef *port, uint16_t pin, uint32_t high_time_ms);
 ```
 
 | Parameter | Meaning | Example |
 | --- | --- | --- |
 | `port` | GPIO port containing the signal pin | `GPIOA` |
 | `pin` | HAL pin mask, not a plain pin number | `GPIO_PIN_0` or `GPIO_PIN_1` |
-| `pulse_width_us` | Requested HIGH time, 500–2,500 µs inclusive | `1500` for midpoint |
+| `high_time_ms` | Requested HIGH delay in whole milliseconds; use 1 or 2 for this exercise | `1` requests 1 ms |
 
-Have the function produce **one complete 20 ms frame** and then return. Clamp
-pulse widths below 500 µs to 500 µs and above 2,500 µs to 2,500 µs. Assume the port
-and pin are valid and already configured. The function blocks while generating
-its frame and does not report whether the servo has physically reached a position.
+Have the function produce one HIGH/LOW cycle whose **requested delays total
+20 ms**, then return. Clamp `high_time_ms` to 1–2 before calculating the LOW delay.
+Assume the port and pin are valid and already configured. The function blocks
+while generating its frame and does not report whether the servo has physically
+reached a position. Actual timing is approximate; see the HAL timing note below.
 
 Call it repeatedly from the existing infinite loop in `main` to hold a position.
 Alternatively, put the same sequence directly in that loop without a helper
 function. A single call sends only one pulse; it does not maintain the signal.
 
-### Work out the loop
+### Using HAL_Delay
 
-For each frame:
-
-1. Choose a HIGH time within the allowed range.
-2. Set the signal pin HIGH.
-3. Wait for the chosen number of microseconds.
-4. Set the signal pin LOW.
-5. Wait for the remainder of the 20,000 µs period.
-6. Repeat.
-
-For this exercise, write a software busy-wait delay using a loop. You can give it
-this interface, also in `main.c`:
+The HAL already provides this function; do not implement it yourself:
 
 ```c
-void delay_us(uint32_t microseconds);
+void HAL_Delay(uint32_t Delay);
 ```
 
-A loop iteration is **not automatically one microsecond**. Its timing depends on
-the CPU clock, compiler optimization, and instructions inside the loop. An empty
-loop may be optimized away entirely. Work out how to keep the delay loop present
-and calibrate it using an oscilloscope or logic analyzer. Recheck it after changing
-build settings. The current project runs the CPU at 170 MHz, but that does not
-mean a C loop takes exactly one clock cycle per iteration.
+`Delay` is a **whole number of milliseconds**, not microseconds. For example,
+`HAL_Delay(1)` requests a wait of at least 1 ms and `HAL_Delay(19)` requests at
+least 19 ms. `HAL_Delay(1500)` waits about 1.5 seconds, not 1,500 µs.
+Do not pass `0.5` or `1.5`: the integer parameter discards the fractional part.
 
-Do not use `HAL_Delay` for this exercise: it depends on a timer-backed HAL tick
-and accepts milliseconds, which is too coarse for these pulse widths. Software
-loop timing is approximate; GPIO calls, loop overhead, and interrupts can extend
-the measured pulse or period. Use the measured waveform to adjust your delay.
-This approach is a learning exercise and occupies the CPU while controlling the
-servo. Precise timing and doing other work at the same time are later topics.
+Use it from the normal main loop after initialization. Leave interrupts enabled
+and do not suspend the HAL tick. This project already uses TIM6 internally for
+the HAL time base; you do not need to write timer code for the exercise.
 
-### Optional: choose a position in degrees
+### Set up the repeating loop
 
-Once a fixed pulse works, convert an absolute angle to a pulse width:
+The servo's target period is **20 ms from the start of one HIGH pulse to the
+start of the next**. Divide that period into a HIGH delay and a LOW delay:
 
-**Pulse width (µs) = 500 + angle × 2,000 ÷ 270**
+**Requested LOW delay (ms) = 20 − requested HIGH delay (ms)**
 
-Clamp the angle to 0–270° first. Use at least 32-bit arithmetic for the
-multiplication and truncate fractional microseconds to match the previous driver.
-You can do this calculation directly in `main`.
+| Requested HIGH delay | Requested LOW delay | Sum of requested delays | Nominal duty cycle |
+| --- | --- | --- | --- |
+| 1 ms | 19 ms | 20 ms | 5% |
+| 2 ms | 18 ms | 20 ms | 10% |
+
+Write these steps inside the existing infinite loop in `main`, or inside your
+optional `servo_pulse` function called once per loop:
+
+1. Choose a HIGH delay of 1 or 2 milliseconds.
+2. Set the selected GPIO HIGH using `HAL_GPIO_WritePin`.
+3. Call `HAL_Delay` with the chosen HIGH delay.
+4. Set the GPIO LOW using `HAL_GPIO_WritePin`.
+5. Call `HAL_Delay` with **20 minus the chosen HIGH delay**.
+6. Repeat immediately. Do not add another delay after the frame.
+
+A 20 ms LOW delay plus a 1 ms HIGH delay would request a 21 ms period, so the
+LOW delay must account for time already spent HIGH. Keep other work out of this
+loop while checking the waveform, since it adds time between pulses.
+
+### What timing can this exercise achieve?
+
+`HAL_Delay` is suitable for learning the sequence, but it cannot reproduce all
+of the servo timings in the reference table. Its whole-millisecond arguments
+cannot request 500, 1,500, or 2,500 µs precisely. Start with the 1 ms request;
+this exercise does not provide precise angle control or the old valve calibration.
+
+The bundled HAL also adds one tick to each requested delay to guarantee a minimum
+wait. With the existing 1 ms tick, each call can take roughly one extra millisecond,
+plus any execution overhead. Consequently, the 1 + 19 ms requests can produce a
+frame closer to 22 ms, and the HIGH pulse can be longer than 1 ms. The table above
+shows requested timing, not guaranteed measured timing. Measure both the HIGH
+pulse and total period; do not assume that a 2 ms request stays below 2,500 µs.
+Exact 20 ms frames and sub-millisecond pulse control are outside this simple
+`HAL_Delay` exercise. Do not change the HAL implementation for this activity.
 
 ### Previous valve positions (optional reference)
 
-You do not need these to complete the exercise. They were calibrated for the old
+These cannot be reproduced accurately with whole-millisecond `HAL_Delay` calls.
+You do not need them to complete the exercise. They were calibrated for the old
 valve linkage and are not generic open/closed positions for every installation.
 
 | Servo / state | Absolute angle | HIGH time | LOW time | Duty cycle |
@@ -161,9 +181,10 @@ valve linkage and are not generic open/closed positions for every installation.
 
 1. Write your loop or functions in the user sections of `Core/Src/main.c`.
 2. Build with `./build.py build --debug` and flash using your board's programmer.
-3. Measure your selected pin. Start with a 1,500 µs HIGH pulse and a total period
-   of approximately 20 ms, repeated continuously.
-4. Change the requested pulse width and check that the HIGH time changes while
-   the total period remains approximately 20 ms.
-5. Try an out-of-range request and confirm that your clamping keeps the HIGH time
-   within 500–2,500 µs.
+3. Start with requested delays of 1 ms HIGH and 19 ms LOW. Measure the selected
+   pin with an oscilloscope or logic analyzer and compare its actual HIGH time
+   and period with the requests and the 20 ms target.
+4. Change the requested HIGH delay and check that you also subtract it from the
+   LOW delay. Measure the result before using it to command the servo.
+5. Try an out-of-range argument and confirm that your function clamps the
+   requested HIGH delay to 1–2 ms before calculating the remainder.
