@@ -207,7 +207,7 @@ valve linkage and are not generic open/closed positions for every installation.
 5. Try an out-of-range argument and confirm that your servo function clamps it
    to 500–2,500 µs before calculating the remainder.
 
-### Timing chart for slides
+### Timing Chart
 
 ![Servo timing chart showing requested HIGH and LOW delays](docs/servo-timing.png)
 
