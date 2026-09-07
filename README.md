@@ -188,3 +188,11 @@ valve linkage and are not generic open/closed positions for every installation.
    LOW delay. Measure the result before using it to command the servo.
 5. Try an out-of-range argument and confirm that your function clamps the
    requested HIGH delay to 1–2 ms before calculating the remainder.
+
+### Timing chart for slides
+
+![Servo timing chart showing requested HIGH and LOW delays](docs/servo-timing.png)
+
+Download the [PNG](docs/servo-timing.png) for PowerPoint or the
+[SVG](docs/servo-timing.svg) for scalable graphics. The chart uses a 16:9 layout
+and shows requested timing; actual `HAL_Delay` timing is longer as explained above.
