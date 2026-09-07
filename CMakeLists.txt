@@ -10,6 +10,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 add_executable(${PROJECT_NAME})
+target_sources(${PROJECT_NAME} PRIVATE Core/Src/delay.c)
 target_link_options(${PROJECT_NAME} PRIVATE
     -T "${CMAKE_CURRENT_SOURCE_DIR}/STM32G491xx_FLASH.ld")
 add_subdirectory(cmake/stm32cubemx)
