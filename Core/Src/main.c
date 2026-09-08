@@ -69,7 +69,7 @@ static void MX_ADC2_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void servo_pulse(GPIO_TypeDef *port, uint16_t pin, uint32_t pulse_width_us);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -118,7 +118,13 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-
+  GPIO_InitTypeDef servo_GPIO_InitStruct = {0};
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+  servo_GPIO_InitStruct.Pin   = GPIO_PIN_1;
+  servo_GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
+  servo_GPIO_InitStruct.Pull  = GPIO_NOPULL;
+  servo_GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &servo_GPIO_InitStruct);
 /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -128,7 +134,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+  }    servo_pulse(GPIOA, GPIO_PIN_1, 1500);
   /* USER CODE END 3 */
 }
 
@@ -608,7 +614,23 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+static void servo_pulse(GPIO_TypeDef *port, uint16_t pin, uint32_t pulse_width_us)
+{
+  if (pulse_width_us < 500U)
+  {
+    pulse_width_us = 500U;
+  }
+  else if (pulse_width_us > 2500U)
+  {
+    pulse_width_us = 2500U;
+  }
 
+  HAL_GPIO_WritePin(port, pin, GPIO_PIN_SET);
+  delay_us(pulse_width_us);
+
+  HAL_GPIO_WritePin(port, pin, GPIO_PIN_RESET);
+  delay_us(20000U - pulse_width_us);
+}
 /* USER CODE END 4 */
 
 /**
